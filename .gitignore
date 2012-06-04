@@ -1,0 +1,9 @@
+/.htaccess
+/google*.html
+/readme.html
+/robots.txt
+/sitemap.xml
+/sitemap.xml.gz
+/wp-config.php
+/wp-config-sample.php
+/wp-content

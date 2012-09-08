@@ -1076,7 +1076,8 @@ function map_meta_cap( $cap, $user_id ) {
 			break;
 		}
 
-		if ( 'private' != $post->post_status ) {
+		$status_obj = get_post_status_object( $post->post_status );
+		if ( $status_obj->public ) {
 			$caps[] = $post_type->cap->read;
 			break;
 		}
@@ -1090,8 +1091,10 @@ function map_meta_cap( $cap, $user_id ) {
 
 		if ( is_object( $post_author_data ) && $user_id == $post_author_data->ID )
 			$caps[] = $post_type->cap->read;
-		else
+		elseif ( $status_obj->private )
 			$caps[] = $post_type->cap->read_private_posts;
+		else
+			$caps = map_meta_cap( 'edit_post', $user_id, $post->ID );
 		break;
 	case 'edit_post_meta':
 	case 'delete_post_meta':
@@ -1126,6 +1129,8 @@ function map_meta_cap( $cap, $user_id ) {
 	case 'unfiltered_html' :
 		// Disallow unfiltered_html for all users, even admins and super admins.
 		if ( defined( 'DISALLOW_UNFILTERED_HTML' ) && DISALLOW_UNFILTERED_HTML )
+			$caps[] = 'do_not_allow';
+		elseif ( is_multisite() && ! is_super_admin( $user_id ) )
 			$caps[] = 'do_not_allow';
 		else
 			$caps[] = $cap;

@@ -1180,6 +1180,11 @@ h3.available-themes {
 	border-left: 1px solid #dfdfdf;
 }
 
+.available-theme .action-links li {
+	padding-left: 8px;
+	margin-left: 8px;
+}
+
 #current-theme .theme-info li:last-child,
 .theme-options li:last-child,
 .available-theme .action-links li:last-child {
@@ -1191,6 +1196,7 @@ h3.available-themes {
 .available-theme .action-links .delete-theme {
 	float: left;
 	margin-left: 0;
+	margin-right: 8px;
 }
 
 .available-theme .action-links p {
@@ -1566,19 +1572,10 @@ table .column-rating {
 /*------------------------------------------------------------------------------
   26.0 - Full Overlay w/ Sidebar
 ------------------------------------------------------------------------------*/
-.wp-full-overlay {
-	left: 0;
-	right: 300px;
-}
-
-.wp-full-overlay.collapsed {
-	right: 0 !important;
-}
-
 .wp-full-overlay .wp-full-overlay-sidebar {
 	margin: 0;
-	left: 100%;
-	right: auto;
+	left: auto;
+	right: 0;
 	border-right: 0;
 	border-left: 1px solid rgba( 0, 0, 0, 0.2 );
 }
@@ -1589,20 +1586,35 @@ table .column-rating {
 	box-shadow: inset 5px 0 4px -4px rgba(0, 0, 0, 0.1);
 }
 
+.wp-full-overlay.collapsed,
+.wp-full-overlay.expanded .wp-full-overlay-sidebar {
+	margin-right: 0 !important;
+}
+
+.wp-full-overlay.expanded {
+	margin-right: 300px;
+	margin-left: 0;
+}
+
+.wp-full-overlay.collapsed .wp-full-overlay-sidebar {
+	margin-right: -300px;
+	margin-left: 0;
+}
+
 /* Collapse Button */
 .wp-full-overlay .collapse-sidebar {
-	right: auto;
-	left: 15px;
+	right: 0;
+	left: auto;
+	margin-right: 15px;
 }
 
 .wp-full-overlay.collapsed .collapse-sidebar {
-	right: auto;
-	left: -45px;
+	right: 100%;
 }
 
 .wp-full-overlay .collapse-sidebar-arrow {
-	margin-left: 0;
 	margin-right: 2px;
+	margin-left: 0;
 	background: transparent url('../../wp-admin/images/arrows.png') no-repeat 0 -108px;
 }
 
@@ -1611,11 +1623,10 @@ table .column-rating {
 }
 
 .wp-full-overlay .collapse-sidebar-label {
-	text-align: left;
-	right: auto;
-	left: 100%;
-	margin-right: 0;
-	margin-left: 10px;
+	right: 100%;
+	left: auto;
+	margin-right: 10px;
+	margin-left: 0;
 }
 
 /*------------------------------------------------------------------------------
@@ -2083,10 +2094,20 @@ body.login {
 }
 
 /* Custom Links */
-#add-custom-link label span { float: right; padding-left: 5px; padding-right:0;}
-.howto span { float: right; }
+#add-custom-link label span {
+	float: right;
+	padding-left: 5px;
+	padding-right: 0;
+}
 
-.list li .menu-item-title input { margin-left: 3px; margin-right: 0 }
+.nav-menus-php .howto span {
+	float: right;
+}
+
+.list li .menu-item-title input {
+	margin-left: 3px;
+	margin-right: 0;
+}
 
 /* Nav Menu */
 .menu-item-handle {
@@ -2102,6 +2123,10 @@ body.login {
 .menu-item-handle .item-title {
 	margin-left:13em;
 	margin-right:0;
+}
+.menu-item-handle .item-edit {
+	right: auto;
+	left: -20px;
 }
 
 /* WARNING: The factor of 30px is hardcoded into the nav-menus javascript. */

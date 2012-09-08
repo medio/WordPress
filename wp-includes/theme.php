@@ -98,7 +98,7 @@ function wp_get_theme( $stylesheet = null, $theme_root = null ) {
 	if ( empty( $theme_root ) ) {
 		$theme_root = get_raw_theme_root( $stylesheet );
 		if ( false === $theme_root )
-			$theme_root = WP_CONTENT_DIR . $theme_root;
+			$theme_root = WP_CONTENT_DIR . '/themes';
 		elseif ( ! in_array( $theme_root, (array) $wp_theme_directories ) )
 			$theme_root = WP_CONTENT_DIR . $theme_root;
 	}
@@ -381,7 +381,7 @@ function search_theme_directories( $force = false ) {
 				if ( ! $sub_dirs )
 					return false;
 				foreach ( $sub_dirs as $sub_dir ) {
-					if ( ! is_dir( $theme_root . '/' . $dir ) || $dir[0] == '.' || $dir == 'CVS' )
+					if ( ! is_dir( $theme_root . '/' . $dir . '/' . $sub_dir ) || $dir[0] == '.' || $dir == 'CVS' )
 						continue;
 					if ( ! file_exists( $theme_root . '/' . $dir . '/' . $sub_dir . '/style.css' ) )
 						continue;
@@ -1102,7 +1102,11 @@ function background_color() {
  * @access protected
  */
 function _custom_background_cb() {
-	$background = get_theme_mod( 'background_image' );
+	// $background is the saved custom image, or the default image.
+	$background = get_background_image();
+
+	// $color is the saved custom color.
+	// A default has to be specified in style.css. It will not be printed here.
 	$color = get_theme_mod( 'background_color' );
 
 	if ( ! $background && ! $color )
@@ -1570,13 +1574,14 @@ function check_theme_switched() {
 /**
  * Includes and instantiates the WP_Customize_Manager class.
  *
- * Fires when ?customize=on.
+ * Fires when ?wp_customize=on or on wp-admin/customize.php.
  *
  * @since 3.4.0
  */
 function _wp_customize_include() {
-	// Load on themes.php or ?customize=on
-	if ( ! ( ( isset( $_REQUEST['customize'] ) && 'on' == $_REQUEST['customize'] ) || 'customize.php' == basename( $_SERVER['PHP_SELF'] ) ) )
+	if ( ! ( ( isset( $_REQUEST['wp_customize'] ) && 'on' == $_REQUEST['wp_customize'] )
+		|| ( is_admin() && 'customize.php' == basename( $_SERVER['PHP_SELF'] ) )
+	) )
 		return;
 
 	require( ABSPATH . WPINC . '/class-wp-customize-manager.php' );
@@ -1597,9 +1602,15 @@ function _wp_customize_loader_settings() {
 	$home_origin  = parse_url( home_url() );
 	$cross_domain = ( strtolower( $admin_origin[ 'host' ] ) != strtolower( $home_origin[ 'host' ] ) );
 
+	$browser = array(
+		'mobile' => wp_is_mobile(),
+		'ios'    => wp_is_mobile() && preg_match( '/iPad|iPod|iPhone/', $_SERVER['HTTP_USER_AGENT'] ),
+	);
+
 	$settings = array(
 		'url'           => esc_url( admin_url( 'customize.php' ) ),
 		'isCrossDomain' => $cross_domain,
+		'browser'       => $browser,
 	);
 
 	$script = 'var _wpCustomizeLoaderSettings = ' . json_encode( $settings ) . ';';
@@ -1618,11 +1629,12 @@ add_action( 'admin_enqueue_scripts', '_wp_customize_loader_settings' );
  * @since 3.4.0
  *
  * @param string $stylesheet Optional. Theme to customize. Defaults to current theme.
+ * 	The theme's stylesheet will be urlencoded if necessary.
  */
 function wp_customize_url( $stylesheet = null ) {
 	$url = admin_url( 'customize.php' );
 	if ( $stylesheet )
-		$url .= '?theme=' . $stylesheet;
+		$url .= '?theme=' . urlencode( $stylesheet );
 	return esc_url( $url );
 }
 

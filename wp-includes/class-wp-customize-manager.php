@@ -17,6 +17,8 @@ final class WP_Customize_Manager {
 	protected $sections = array();
 	protected $controls = array();
 
+	protected $nonce_tick;
+
 	protected $customized;
 
 	private $_post_values;
@@ -30,6 +32,8 @@ final class WP_Customize_Manager {
 		require( ABSPATH . WPINC . '/class-wp-customize-setting.php' );
 		require( ABSPATH . WPINC . '/class-wp-customize-section.php' );
 		require( ABSPATH . WPINC . '/class-wp-customize-control.php' );
+
+		add_filter( 'wp_die_handler', array( $this, 'wp_die_handler' ) );
 
 		add_action( 'setup_theme',  array( $this, 'setup_theme' ) );
 		add_action( 'wp_loaded',    array( $this, 'wp_loaded' ) );
@@ -52,39 +56,92 @@ final class WP_Customize_Manager {
 		add_action( 'customize_controls_enqueue_scripts', array( $this, 'enqueue_control_scripts' ) );
 	}
 
-	/**
-	 * Update theme modifications for the current theme.
-	 * Note: Candidate core function.
-	 * http://core.trac.wordpress.org/ticket/20091
+ 	/**
+	 * Return true if it's an AJAX request.
 	 *
 	 * @since 3.4.0
-	 *
-	 * @param array $mods Theme modifications.
 	 */
-	public function set_theme_mods( $mods ) {
-		$current = get_theme_mods();
-
-		$mods = wp_parse_args( $mods, $current );
-
-		$theme = get_stylesheet();
-		update_option( "theme_mods_$theme", $mods );
+	public function doing_ajax() {
+		return isset( $_POST['customized'] ) || ( defined( 'DOING_AJAX' ) && DOING_AJAX );
 	}
 
 	/**
-	 * Start preview and customize theme.
+	 * Custom wp_die wrapper. Returns either the standard message for UI
+	 * or the AJAX message.
 	 *
-	 * Check if customize query variable exist. Init filters to filter the current theme.
+	 * @param  mixed $ajax_message AJAX return
+	 * @param  mixed $message      UI message
+	 *
+	 * @since 3.4.0
+	 */
+	protected function wp_die( $ajax_message, $message = null ) {
+		if ( $this->doing_ajax() )
+			wp_die( $ajax_message );
+
+		if ( ! $message )
+			$message = __( 'Cheatin&#8217; uh?' );
+
+		wp_die( $message );
+	}
+
+	/**
+	 * Return the AJAX wp_die() handler if it's a customized request.
+	 *
+	 * @since 3.4.0
+	 */
+	public function wp_die_handler() {
+		if ( $this->doing_ajax() )
+			return '_ajax_wp_die_handler';
+
+		return '_default_wp_die_handler';
+	}
+	/**
+	* Start preview and customize theme.
+	*
+	* Check if customize query variable exist. Init filters to filter the current theme.
 	 *
 	 * @since 3.4.0
 	 */
 	public function setup_theme() {
-		if ( ! ( isset( $_REQUEST['customize'] ) && 'on' == $_REQUEST['customize'] ) && ! basename( $_SERVER['PHP_SELF'] ) == 'customize.php' )
-			return;
-
 		send_origin_headers();
 
-		$this->start_previewing_theme();
+		if ( is_admin() && ! $this->doing_ajax() )
+		    auth_redirect();
+		elseif ( $this->doing_ajax() && ! is_user_logged_in() )
+		    $this->wp_die( 0 );
+
 		show_admin_bar( false );
+
+		if ( ! current_user_can( 'edit_theme_options' ) )
+			$this->wp_die( -1 );
+
+		$this->original_stylesheet = get_stylesheet();
+
+		$this->theme = wp_get_theme( isset( $_REQUEST['theme'] ) ? $_REQUEST['theme'] : null );
+
+		if ( $this->is_theme_active() ) {
+			// Once the theme is loaded, we'll validate it.
+			add_action( 'after_setup_theme', array( $this, 'after_setup_theme' ) );
+		} else {
+			if ( ! current_user_can( 'switch_themes' ) )
+				$this->wp_die( -1 );
+
+			// If the theme isn't active, you can't preview it if it is not allowed or has errors.
+			if ( $this->theme()->errors() )
+				$this->wp_die( -1 );
+
+			if ( ! $this->theme()->is_allowed() )
+				$this->wp_die( -1 );
+		}
+
+		$this->start_previewing_theme();
+	}
+
+	function after_setup_theme() {
+		if ( ! $this->doing_ajax() && ! validate_current_theme() ) {
+			wp_redirect( 'themes.php?broken=true' );
+			exit;
+		}
 	}
 
 	/**
@@ -95,33 +152,25 @@ final class WP_Customize_Manager {
 	 * @since 3.4.0
 	 */
 	public function start_previewing_theme() {
-		if ( $this->is_preview() || false === $this->theme || ( $this->theme && ! $this->theme->exists() ) )
+		// Bail if we're already previewing.
+		if ( $this->is_preview() )
 			return;
-
-		// Initialize $theme and $original_stylesheet if they do not yet exist.
-		if ( ! isset( $this->theme ) ) {
-			$this->theme = wp_get_theme( isset( $_REQUEST['theme'] ) ? $_REQUEST['theme'] : null );
-			if ( ! $this->theme->exists() ) {
-				$this->theme = false;
-				return;
-			}
-		}
-
-		$this->original_stylesheet = get_stylesheet();
 
 		$this->previewing = true;
 
-		add_filter( 'template', array( $this, 'get_template' ) );
-		add_filter( 'stylesheet', array( $this, 'get_stylesheet' ) );
-		add_filter( 'pre_option_current_theme', array( $this, 'current_theme' ) );
+		if ( ! $this->is_theme_active() ) {
+			add_filter( 'template', array( $this, 'get_template' ) );
+			add_filter( 'stylesheet', array( $this, 'get_stylesheet' ) );
+			add_filter( 'pre_option_current_theme', array( $this, 'current_theme' ) );
 
-		// @link: http://core.trac.wordpress.org/ticket/20027
-		add_filter( 'pre_option_stylesheet', array( $this, 'get_stylesheet' ) );
-		add_filter( 'pre_option_template', array( $this, 'get_template' ) );
+			// @link: http://core.trac.wordpress.org/ticket/20027
+			add_filter( 'pre_option_stylesheet', array( $this, 'get_stylesheet' ) );
+			add_filter( 'pre_option_template', array( $this, 'get_template' ) );
 
-		// Handle custom theme roots.
-		add_filter( 'pre_option_stylesheet_root', array( $this, 'get_stylesheet_root' ) );
-		add_filter( 'pre_option_template_root', array( $this, 'get_template_root' ) );
+			// Handle custom theme roots.
+			add_filter( 'pre_option_stylesheet_root', array( $this, 'get_stylesheet_root' ) );
+			add_filter( 'pre_option_template_root', array( $this, 'get_template_root' ) );
+		}
 
 		do_action( 'start_previewing_theme', $this );
 	}
@@ -139,17 +188,19 @@ final class WP_Customize_Manager {
 
 		$this->previewing = false;
 
-		remove_filter( 'template', array( $this, 'get_template' ) );
-		remove_filter( 'stylesheet', array( $this, 'get_stylesheet' ) );
-		remove_filter( 'pre_option_current_theme', array( $this, 'current_theme' ) );
+		if ( ! $this->is_theme_active() ) {
+			remove_filter( 'template', array( $this, 'get_template' ) );
+			remove_filter( 'stylesheet', array( $this, 'get_stylesheet' ) );
+			remove_filter( 'pre_option_current_theme', array( $this, 'current_theme' ) );
 
-		// @link: http://core.trac.wordpress.org/ticket/20027
-		remove_filter( 'pre_option_stylesheet', array( $this, 'get_stylesheet' ) );
-		remove_filter( 'pre_option_template', array( $this, 'get_template' ) );
+			// @link: http://core.trac.wordpress.org/ticket/20027
+			remove_filter( 'pre_option_stylesheet', array( $this, 'get_stylesheet' ) );
+			remove_filter( 'pre_option_template', array( $this, 'get_template' ) );
 
-		// Handle custom theme roots.
-		remove_filter( 'pre_option_stylesheet_root', array( $this, 'get_stylesheet_root' ) );
-		remove_filter( 'pre_option_template_root', array( $this, 'get_template_root' ) );
+			// Handle custom theme roots.
+			remove_filter( 'pre_option_stylesheet_root', array( $this, 'get_stylesheet_root' ) );
+			remove_filter( 'pre_option_template_root', array( $this, 'get_template_root' ) );
+		}
 
 		do_action( 'stop_previewing_theme', $this );
 	}
@@ -259,10 +310,13 @@ final class WP_Customize_Manager {
 	 * @since 3.4.0
 	 */
 	public function customize_preview_init() {
+		$this->nonce_tick = check_ajax_referer( 'preview-customize_' . $this->get_stylesheet(), 'nonce' );
+
 		$this->prepare_controls();
 
 		wp_enqueue_script( 'customize-preview' );
 		add_action( 'wp_head', array( $this, 'customize_preview_base' ) );
+		add_action( 'wp_head', array( $this, 'customize_preview_html5' ) );
 		add_action( 'wp_footer', array( $this, 'customize_preview_settings' ), 20 );
 		add_action( 'shutdown', array( $this, 'customize_preview_signature' ), 1000 );
 		add_filter( 'wp_die_handler', array( $this, 'remove_preview_signature' ) );
@@ -284,14 +338,40 @@ final class WP_Customize_Manager {
 	}
 
 	/**
+	 * Print a workaround to handle HTML5 tags in IE < 9
+	 *
+	 * @since 3.4.0
+	 */
+	public function customize_preview_html5() { ?>
+		<!--[if lt IE 9]>
+		<script type="text/javascript">
+			var e = [ 'abbr', 'article', 'aside', 'audio', 'canvas', 'datalist', 'details',
+				'figure', 'footer', 'header', 'hgroup', 'mark', 'menu', 'meter', 'nav',
+				'output', 'progress', 'section', 'time', 'video' ];
+			for ( var i = 0; i < e.length; i++ ) {
+				document.createElement( e[i] );
+			}
+		</script>
+		<![endif]--><?php
+	}
+
+	/**
 	 * Print javascript settings for preview frame.
 	 *
 	 * @since 3.4.0
 	 */
 	public function customize_preview_settings() {
 		$settings = array(
-			'values' => array(),
+			'values'  => array(),
+			'channel' => esc_js( $_POST['customize_messenger_channel'] ),
 		);
+
+		if ( 2 == $this->nonce_tick ) {
+ 			$settings['nonce'] = array(
+ 				'save' => wp_create_nonce( 'save-customize_' . $this->get_stylesheet() ),
+ 				'preview' => wp_create_nonce( 'preview-customize_' . $this->get_stylesheet() )
+ 			);
+ 		}
 
 		foreach ( $this->settings as $id => $setting ) {
 			$settings['values'][ $id ] = $setting->js_value();
@@ -343,7 +423,7 @@ final class WP_Customize_Manager {
 	 * @return string Template name.
 	 */
 	public function get_template() {
-		return $this->theme->get_template();
+		return $this->theme()->get_template();
 	}
 
 	/**
@@ -354,7 +434,7 @@ final class WP_Customize_Manager {
 	 * @return string Stylesheet name.
 	 */
 	public function get_stylesheet() {
-		return $this->theme->get_stylesheet();
+		return $this->theme()->get_stylesheet();
 	}
 
 	/**
@@ -387,7 +467,7 @@ final class WP_Customize_Manager {
 	 * @return string Theme name.
 	 */
 	public function current_theme( $current_theme ) {
-		return $this->theme->display('Name');
+		return $this->theme()->display('Name');
 	}
 
 	/**
@@ -399,13 +479,10 @@ final class WP_Customize_Manager {
 		if ( ! $this->is_preview() )
 			die;
 
-		check_ajax_referer( 'customize_controls', 'nonce' );
+		check_ajax_referer( 'save-customize_' . $this->get_stylesheet(), 'nonce' );
 
 		// Do we have to switch themes?
-		if ( $this->get_stylesheet() != $this->original_stylesheet ) {
-			if ( ! current_user_can( 'switch_themes' ) )
-				die;
-
+		if ( ! $this->is_theme_active() ) {
 			// Temporarily stop previewing the theme to allow switch_themes()
 			// to operate properly.
 			$this->stop_previewing_theme();
@@ -419,20 +496,7 @@ final class WP_Customize_Manager {
 			$setting->save();
 		}
 
-		add_action( 'admin_notices', array( $this, '_save_feedback' ) );
-
 		die;
-	}
-
-	/**
-	 * Show an admin notice after settings are saved.
-	 *
-	 * @since 3.4.0
-	 */
-	public function _save_feedback() {
-		?>
-		<div class="updated"><p><?php printf( __( 'Settings saved and theme activated. <a href="%s">Visit site</a>.' ), home_url( '/' ) ); ?></p></div>
-		<?php
 	}
 
 	/**
@@ -712,10 +776,15 @@ final class WP_Customize_Manager {
 			'priority'       => 60,
 		) );
 
-		$this->add_setting( 'header_image', array(
+		$this->add_setting( new WP_Customize_Filter_Setting( $this, 'header_image', array(
 			'default'        => get_theme_support( 'custom-header', 'default-image' ),
 			'theme_supports' => 'custom-header',
-		) );
+		) ) );
+
+		$this->add_setting( new WP_Customize_Header_Image_Setting( $this, 'header_image_data', array(
+			// 'default'        => get_theme_support( 'custom-header', 'default-image' ),
+			'theme_supports' => 'custom-header',
+		) ) );
 
 		$this->add_control( new WP_Customize_Header_Image_Control( $this ) );
 
@@ -731,6 +800,10 @@ final class WP_Customize_Manager {
 			'default'        => get_theme_support( 'custom-background', 'default-image' ),
 			'theme_supports' => 'custom-background',
 		) );
+
+		$this->add_setting( new WP_Customize_Background_Image_Setting( $this, 'background_image_thumb', array(
+			'theme_supports' => 'custom-background',
+		) ) );
 
 		$this->add_control( new WP_Customize_Background_Image_Control( $this ) );
 

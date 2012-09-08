@@ -189,7 +189,7 @@ $(document).ready( function() {
 		over: function(e){
 			var b, h, o, f, m = $(this).find('.wp-submenu'), menutop, wintop, maxtop;
 
-			if ( !$(document.body).hasClass('folded') && $(this).hasClass('wp-menu-open') )
+			if ( m.is(':visible') )
 				return;
 
 			menutop = $(this).offset().top;
@@ -216,7 +216,7 @@ $(document).ready( function() {
 			m.addClass('sub-open');
 		},
 		out: function(){
-			$(this).find('.wp-submenu').removeClass('sub-open');
+			$(this).find('.wp-submenu').removeClass('sub-open').css('margin-top', '');
 		},
 		timeout: 200,
 		sensitivity: 7,

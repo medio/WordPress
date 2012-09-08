@@ -122,7 +122,7 @@
 			this.farbtastic = $.farbtastic( this.container.find('.farbtastic-placeholder'), control.setting.set );
 
 			// Only pass through values that are valid hexes/empty.
-			input.link( this.setting ).validate = function( to ) {
+			input.sync( this.setting ).validate = function( to ) {
 				return rhex.test( to ) ? to : null;
 			};
 
@@ -148,6 +148,13 @@
 				success:   this.success
 			}, this.uploader || {} );
 
+			if ( this.uploader.supported ) {
+				if ( control.params.context )
+					control.uploader.param( 'post_data[context]', this.params.context );
+
+				control.uploader.param( 'post_data[theme]', api.settings.theme.stylesheet );
+			}
+
 			this.uploader = new wp.Uploader( this.uploader );
 
 			this.remover = this.container.find('.remove');
@@ -159,11 +166,6 @@
 			this.removerVisibility = $.proxy( this.removerVisibility, this );
 			this.setting.bind( this.removerVisibility );
 			this.removerVisibility( this.setting.get() );
-
-			if ( this.params.context )
-				control.uploader.param( 'post_data[context]', this.params.context );
-
-			control.uploader.param( 'post_data[theme]', api.settings.theme.stylesheet );
 		},
 		success: function( attachment ) {
 			this.setting.set( attachment.url );
@@ -182,7 +184,7 @@
 				init: function( up ) {
 					var fallback, button;
 
-					if ( up.features.dragdrop )
+					if ( this.supports.dragdrop )
 						return;
 
 					// Maintain references while wrapping the fallback button.
@@ -218,10 +220,6 @@
 				};
 			});
 
-			// Select a tab
-			this.selected = this.tabs[ panels.first().data('customizeTab') ];
-			this.selected.both.addClass('library-selected');
-
 			// Bind tab switch events
 			this.library.children('ul').on( 'click', 'li', function( event ) {
 				var id  = $(this).data('customizeTab'),
@@ -237,6 +235,7 @@
 				control.selected.both.addClass('library-selected');
 			});
 
+			// Bind events to switch image urls.
 			this.library.on( 'click', 'a', function( event ) {
 				var value = $(this).data('customizeImageValue');
 
@@ -252,6 +251,18 @@
 					this.tabs.uploaded.both.addClass('hidden');
 			}
 
+			// Select a tab
+			panels.each( function() {
+				var tab = control.tabs[ $(this).data('customizeTab') ];
+
+				// Select the first visible tab.
+				if ( ! tab.link.hasClass('hidden') ) {
+					control.selected = tab;
+					tab.both.addClass('library-selected');
+					return false;
+				}
+			});
+
 			this.dropdownInit();
 		},
 		success: function( attachment ) {
@@ -261,7 +272,7 @@
 			if ( this.tabs.uploaded && this.tabs.uploaded.target.length ) {
 				this.tabs.uploaded.both.removeClass('hidden');
 
-				$( '<a href="#" class="thumbnail"></a>' )
+				attachment.element = $( '<a href="#" class="thumbnail"></a>' )
 					.data( 'customizeImageValue', attachment.url )
 					.append( '<img src="' +  attachment.url+ '" />' )
 					.appendTo( this.tabs.uploaded.target );
@@ -281,21 +292,183 @@
 	// Create the collection of Control objects.
 	api.control = new api.Values({ defaultConstructor: api.Control });
 
+	api.PreviewFrame = api.Messenger.extend({
+		sensitivity: 2000,
+
+		initialize: function( params, options ) {
+			var deferred = $.Deferred(),
+				self     = this;
+
+			// This is the promise object.
+			deferred.promise( this );
+
+			this.container = params.container;
+			this.signature = params.signature;
+
+			$.extend( params, { channel: api.PreviewFrame.uuid() });
+
+			api.Messenger.prototype.initialize.call( this, params, options );
+
+			this.add( 'previewUrl', params.previewUrl );
+
+			this.query = $.extend( params.query || {}, { customize_messenger_channel: this.channel() });
+
+			this.run( deferred );
+		},
+
+		run: function( deferred ) {
+			var self   = this,
+				loaded = false,
+				ready  = false;
+
+			if ( this._ready )
+				this.unbind( 'ready', this._ready );
+
+			this._ready = function() {
+				ready = true;
+
+				if ( loaded )
+					deferred.resolveWith( self );
+			};
+
+			this.bind( 'ready', this._ready );
+
+			this.request = $.ajax( this.previewUrl(), {
+				type: 'POST',
+				data: this.query,
+				xhrFields: {
+					withCredentials: true
+				}
+			} );
+
+			this.request.fail( function() {
+				deferred.rejectWith( self, [ 'request failure' ] );
+			});
+
+			this.request.done( function( response ) {
+				var location = self.request.getResponseHeader('Location'),
+					signature = self.signature,
+					index;
+
+				// Check if the location response header differs from the current URL.
+				// If so, the request was redirected; try loading the requested page.
+				if ( location && location != self.previewUrl() ) {
+					deferred.rejectWith( self, [ 'redirect', location ] );
+					return;
+				}
+
+				// Check if the user is not logged in.
+				if ( '0' === response ) {
+					self.login( deferred );
+					return;
+				}
+
+				// Check for cheaters.
+				if ( '-1' === response ) {
+					deferred.rejectWith( self, [ 'cheatin' ] );
+					return;
+				}
+
+				// Check for a signature in the request.
+				index = response.lastIndexOf( signature );
+				if ( -1 === index || index < response.lastIndexOf('</html>') ) {
+					deferred.rejectWith( self, [ 'unsigned' ] );
+					return;
+				}
+
+				// Strip the signature from the request.
+				response = response.slice( 0, index ) + response.slice( index + signature.length );
+
+				// Create the iframe and inject the html content.
+				self.iframe = $('<iframe />').appendTo( self.container );
+
+				// Bind load event after the iframe has been added to the page;
+				// otherwise it will fire when injected into the DOM.
+				self.iframe.one( 'load', function() {
+					loaded = true;
+
+					if ( ready ) {
+						deferred.resolveWith( self );
+					} else {
+						setTimeout( function() {
+							deferred.rejectWith( self, [ 'ready timeout' ] );
+						}, self.sensitivity );
+					}
+				});
+
+				self.targetWindow( self.iframe[0].contentWindow );
+
+				self.targetWindow().document.open();
+				self.targetWindow().document.write( response );
+				self.targetWindow().document.close();
+			});
+		},
+
+		login: function( deferred ) {
+			var self = this,
+				reject;
+
+			reject = function() {
+				deferred.rejectWith( self, [ 'logged out' ] );
+			};
+
+			if ( this.triedLogin )
+				return reject();
+
+			// Check if we have an admin cookie.
+			$.get( api.settings.url.ajax, {
+				action: 'logged-in'
+			}).fail( reject ).done( function( response ) {
+				var iframe;
+
+				if ( '1' !== response )
+					reject();
+
+				iframe = $('<iframe src="' + self.previewUrl() + '" />').hide();
+				iframe.appendTo( self.container );
+				iframe.load( function() {
+					self.triedLogin = true;
+
+					iframe.remove();
+					self.run( deferred );
+				});
+			});
+		},
+
+		destroy: function() {
+			api.Messenger.prototype.destroy.call( this );
+			this.request.abort();
+
+			if ( this.iframe )
+				this.iframe.remove();
+
+			delete this.request;
+			delete this.iframe;
+			delete this.targetWindow;
+		}
+	});
+
+	(function(){
+		var uuid = 0;
+		api.PreviewFrame.uuid = function() {
+			return 'preview-' + uuid++;
+		};
+	}());
+
 	api.Previewer = api.Messenger.extend({
 		refreshBuffer: 250,
 
 		/**
 		 * Requires params:
-		 *  - container - a selector or jQuery element
-		 *  - url       - the URL of preview frame
+		 *  - container  - a selector or jQuery element
+		 *  - previewUrl - the URL of preview frame
 		 */
 		initialize: function( params, options ) {
 			var self = this,
-				rscheme = /^https?/;
+				rscheme = /^https?/,
+				url;
 
 			$.extend( this, options || {} );
-
-			this.loaded = $.proxy( this.loaded, this );
 
 			/*
 			 * Wrap this.refresh to prevent it from hammering the servers:
@@ -320,9 +493,7 @@
 				return function() {
 					if ( typeof timeout !== 'number' ) {
 						if ( self.loading ) {
-							self.loading.remove();
-							delete self.loading;
-							self.loader();
+							self.abort();
 						} else {
 							return callback();
 						}
@@ -335,12 +506,11 @@
 
 			this.container   = api.ensure( params.container );
 			this.allowedUrls = params.allowedUrls;
+			this.signature   = params.signature;
 
-			api.Messenger.prototype.initialize.call( this, params.url );
+			params.url = window.location.href;
 
-			// We're dynamically generating the iframe, so the origin is set
-			// to the current window's location, not the url's.
-			this.origin.unlink( this.url ).set( window.location.href );
+			api.Messenger.prototype.initialize.call( this, params );
 
 			this.add( 'scheme', this.origin() ).link( this.origin ).setter( function( to ) {
 				var match = to.match( rscheme );
@@ -355,7 +525,7 @@
 			// are on different domains to avoid the case where the frontend doesn't have
 			// ssl certs.
 
-			this.url.setter( function( to ) {
+			this.add( 'previewUrl', params.previewUrl ).setter( function( to ) {
 				var result;
 
 				// Check for URLs that include "/wp-admin/" or end in "/wp-admin".
@@ -380,8 +550,8 @@
 				return result ? result : null;
 			});
 
-			// Refresh the preview when the URL is changed.
-			this.url.bind( this.refresh );
+			// Refresh the preview when the URL is changed (but not yet).
+			this.previewUrl.bind( this.refresh );
 
 			this.scroll = 0;
 			this.bind( 'scroll', function( distance ) {
@@ -389,67 +559,100 @@
 			});
 
 			// Update the URL when the iframe sends a URL message.
-			this.bind( 'url', this.url );
+			this.bind( 'url', this.previewUrl );
 		},
-		loader: function() {
-			if ( this.loading )
-				return this.loading;
 
-			this.loading = $('<iframe />').appendTo( this.container );
-
-			return this.loading;
-		},
-		loaded: function() {
-			if ( this.iframe )
-				this.iframe.remove();
-
-			this.iframe = this.loading;
-			delete this.loading;
-
-			this.targetWindow( this.iframe[0].contentWindow );
-			this.send( 'scroll', this.scroll );
-		},
 		query: function() {},
+
+		abort: function() {
+			if ( this.loading ) {
+				this.loading.destroy();
+				delete this.loading;
+			}
+		},
+
 		refresh: function() {
 			var self = this;
 
-			if ( this.request )
-				this.request.abort();
+			this.abort();
 
-			this.request = $.ajax( this.url(), {
-				type: 'POST',
-				data: this.query() || {},
-				success: function( response ) {
-					var iframe = self.loader()[0].contentWindow,
-						location = self.request.getResponseHeader('Location'),
-						signature = 'WP_CUSTOMIZER_SIGNATURE',
-						index;
+			this.loading = new api.PreviewFrame({
+				url:        this.url(),
+				previewUrl: this.previewUrl(),
+				query:      this.query() || {},
+				container:  this.container,
+				signature:  this.signature
+			});
 
-					// Check if the location response header differs from the current URL.
-					// If so, the request was redirected; try loading the requested page.
-					if ( location && location != self.url() ) {
-						self.url( location );
-						return;
+			this.loading.done( function() {
+				// 'this' is the loading frame
+				this.bind( 'synced', function() {
+					if ( self.preview )
+						self.preview.destroy();
+					self.preview = this;
+					delete self.loading;
+
+					self.targetWindow( this.targetWindow() );
+					self.channel( this.channel() );
+
+					self.send( 'active' );
+				});
+
+				this.send( 'sync', {
+					scroll:   self.scroll,
+					settings: api.get()
+				});
+			});
+
+			this.loading.fail( function( reason, location ) {
+				if ( 'redirect' === reason && location )
+					self.previewUrl( location );
+
+				if ( 'logged out' === reason ) {
+					if ( self.preview ) {
+						self.preview.destroy();
+						delete self.preview;
 					}
 
-					// Check for a signature in the request.
-					index = response.lastIndexOf( signature );
-					if ( -1 === index || index < response.lastIndexOf('</html>') )
-						return;
-
-					// Strip the signature from the request.
-					response = response.slice( 0, index ) + response.slice( index + signature.length );
-
-					self.loader().one( 'load', self.loaded );
-
-					iframe.document.open();
-					iframe.document.write( response );
-					iframe.document.close();
-				},
-				xhrFields: {
-					withCredentials: true
+					self.login().done( self.refresh );
 				}
-			} );
+
+				if ( 'cheatin' === reason )
+					self.cheatin();
+			});
+		},
+
+		login: function() {
+			var previewer = this,
+				deferred, messenger, iframe;
+
+			if ( this._login )
+				return this._login;
+
+			deferred = $.Deferred();
+			this._login = deferred.promise();
+
+			messenger = new api.Messenger({
+				channel: 'login',
+				url:     api.settings.url.login
+			});
+
+			iframe = $('<iframe src="' + api.settings.url.login + '" />').appendTo( this.container );
+
+			messenger.targetWindow( iframe[0].contentWindow );
+
+			messenger.bind( 'login', function() {
+				iframe.remove();
+				messenger.destroy();
+				delete previewer._login;
+				deferred.resolve();
+			});
+
+			return this._login;
+		},
+
+		cheatin: function() {
+			$( document.body ).empty().addClass('cheatin').append( '<p>' + api.l10n.cheatin + '</p>' );
 		}
 	});
 
@@ -476,10 +679,14 @@
 			return window.location = api.settings.url.fallback;
 
 		var body = $( document.body ),
+			overlay = body.children('.wp-full-overlay'),
 			query, previewer, parent;
 
 		// Prevent the form from saving when enter is pressed.
 		$('#customize-controls').on( 'keydown', function( e ) {
+			if ( $( e.target ).is('textarea') )
+				return;
+
 			if ( 13 === e.which ) // Enter
 				e.preventDefault();
 		});
@@ -488,23 +695,27 @@
 		previewer = new api.Previewer({
 			container:   '#customize-preview',
 			form:        '#customize-controls',
-			url:         api.settings.url.preview,
-			allowedUrls: api.settings.url.allowed
+			previewUrl:  api.settings.url.preview,
+			allowedUrls: api.settings.url.allowed,
+			signature:   'WP_CUSTOMIZER_SIGNATURE'
 		}, {
+
+			nonce: api.settings.nonce,
+
 			query: function() {
 				return {
-					customize:  'on',
-					theme:      api.settings.theme.stylesheet,
-					customized: JSON.stringify( api.get() )
+					wp_customize: 'on',
+					theme:        api.settings.theme.stylesheet,
+					customized:   JSON.stringify( api.get() ),
+					nonce:        this.nonce.preview
 				};
 			},
 
-			nonce: $('#_wpnonce').val(),
-
 			save: function() {
-				var query = $.extend( this.query(), {
+				var self  = this,
+					query = $.extend( this.query(), {
 						action: 'customize_save',
-						nonce:  this.nonce
+						nonce:  this.nonce.save
 					}),
 					request = $.post( api.settings.url.ajax, query );
 
@@ -516,11 +727,32 @@
 					body.removeClass('saving');
 				});
 
-				request.done( function() {
+				request.done( function( response ) {
+					// Check if the user is logged out.
+					if ( '0' === response ) {
+						self.preview.iframe.hide();
+						self.login().done( function() {
+							self.save();
+							self.preview.iframe.show();
+						});
+						return;
+					}
+
+					// Check for cheaters.
+					if ( '-1' === response ) {
+						self.cheatin();
+						return;
+					}
+
 					api.trigger( 'saved' );
 				});
 			}
 		});
+
+		// Refresh the nonces if the preview sends updated nonces over.
+ 		previewer.bind( 'nonce', function( nonce ) {
+ 			$.extend( this.nonce, nonce );
+ 		});
 
 		$.each( api.settings.settings, function( id, data ) {
 			api.create( id, id, data.value, {
@@ -539,8 +771,11 @@
 			} ) );
 		});
 
-		// Load the preview frame.
-		previewer.refresh();
+		// Check if preview url is valid and load the preview frame.
+		if ( previewer.previewUrl() )
+			previewer.refresh();
+		else
+			previewer.previewUrl( api.settings.url.home );
 
 		// Save and activated states
 		(function() {
@@ -588,11 +823,6 @@
 			api.state = state;
 		}());
 
-		api.bind( 'activated', function() {
-			if ( api.settings.url.activated )
-				window.location = api.settings.url.activated;
-		});
-
 		// Temporary accordion code.
 		$('.customize-section-title').click( function( event ) {
 			var clicked = $( this ).parents( '.customize-section' );
@@ -612,12 +842,15 @@
 		});
 
 		$('.collapse-sidebar').click( function( event ) {
-			body.toggleClass( 'collapsed' );
+			overlay.toggleClass( 'collapsed' ).toggleClass( 'expanded' );
 			event.preventDefault();
 		});
 
 		// Create a potential postMessage connection with the parent frame.
-		parent = new api.Messenger( api.settings.url.parent );
+		parent = new api.Messenger({
+			url: api.settings.url.parent,
+			channel: 'loader'
+		});
 
 		// If we receive a 'back' event, we're inside an iframe.
 		// Send any clicks to the 'Return' link to the parent page.
@@ -629,10 +862,17 @@
 		});
 
 		// Pass events through to the parent.
-		$.each([ 'saved', 'activated' ], function( i, id ) {
-			api.bind( id, function() {
-				parent.send( id );
-			});
+		api.bind( 'saved', function() {
+			parent.send( 'saved' );
+		});
+
+		// When activated, let the loader handle redirecting the page.
+		// If no loader exists, redirect the page ourselves (if a url exists).
+		api.bind( 'activated', function() {
+			if ( parent.targetWindow() )
+				parent.send( 'activated', api.settings.url.activated );
+			else if ( api.settings.url.activated )
+				window.location = api.settings.url.activated;
 		});
 
 		// Initialize the connection with the parent frame.
@@ -686,6 +926,35 @@
 			control.setting.bind( function( to ) {
 				control.element.set( 'blank' !== to );
 			});
+		});
+
+		// Handle header image data
+		api.control( 'header_image', function( control ) {
+			control.setting.bind( function( to ) {
+				if ( to === control.params.removed )
+					control.settings.data.set( false );
+			});
+
+			control.library.on( 'click', 'a', function( event ) {
+				control.settings.data.set( $(this).data('customizeHeaderImageData') );
+			});
+
+			control.uploader.success = function( attachment ) {
+				var data;
+
+				api.ImageControl.prototype.success.call( control, attachment );
+
+				data = {
+					attachment_id: attachment.id,
+					url:           attachment.url,
+					thumbnail_url: attachment.url,
+					height:        attachment.meta.height,
+					width:         attachment.meta.width
+				};
+
+				attachment.element.data( 'customizeHeaderImageData', data );
+				control.settings.data.set( data );
+			}
 		});
 
 		api.trigger( 'ready' );
